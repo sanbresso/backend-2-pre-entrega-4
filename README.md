@@ -1,6 +1,6 @@
 # Plataforma de Eventos e Inscripciones
 
-## Pre-entrega 3 — Autenticación con JWT y cookies
+## Pre-entrega 4 — Autenticación centralizada con Passport.js
 
 ## Descripción
 
@@ -10,7 +10,9 @@ La aplicación está orientada a la gestión de eventos e inscripciones de usuar
 
 La Pre-entrega 1 estableció la arquitectura modular inicial y la Pre-entrega 2 incorporó el registro seguro de usuarios con bcrypt y persistencia en MongoDB mediante Mongoose.
 
-La Pre-entrega 3 amplía el módulo de sesiones con login, generación y verificación de JWT, almacenamiento en una cookie HttpOnly llamada `currentUser`, ruta protegida `/current` y logout.
+La Pre-entrega 3 amplió el módulo de sesiones con login, generación y verificación de JWT, almacenamiento en la cookie HttpOnly `currentUser`, ruta protegida `/current` y logout.
+
+La **Pre-entrega 4** centraliza registro, login y usuario actual mediante las estrategias **Passport.js `register`, `login` y `current`**. Conserva los endpoints, las respuestas JSON, los JWT y las cookies de la Pre-entrega 3; cambia la organización interna de la autenticación.
 
 ## Tecnologías utilizadas
 
@@ -22,6 +24,9 @@ La Pre-entrega 3 amplía el módulo de sesiones con login, generación y verific
 - bcrypt
 - jsonwebtoken
 - cookie-parser
+- passport
+- passport-local
+- passport-jwt
 - dotenv
 - Git y GitHub
 
@@ -36,8 +41,8 @@ La Pre-entrega 3 amplía el módulo de sesiones con login, generación y verific
 ### 1. Clonar el repositorio
 
 ```bash
-git clone https://github.com/sanbresso/backend-2-pre-entrega-3.git
-cd backend-2-pre-entrega-3
+git clone https://github.com/sanbresso/backend-2-pre-entrega-4.git
+cd backend-2-pre-entrega-4
 ```
 
 ### 2. Instalar las dependencias
@@ -95,7 +100,8 @@ src/
 ├── app.js
 ├── server.js
 ├── config/
-│   └── db.js
+│   ├── db.js
+│   └── passport.config.js
 ├── models/
 │   ├── User.js
 │   └── Event.js
@@ -131,16 +137,16 @@ src/
 - **DAO:** realizan las operaciones de persistencia.
 - **Models:** definen los esquemas de Mongoose.
 - **Utils:** contienen funciones reutilizables para hashing, comparación de contraseñas y firma/verificación de JWT.
-- **Config:** contiene la configuración de conexión a MongoDB.
+- **Config:** contiene la conexión a MongoDB y el registro centralizado de estrategias Passport.
 - **Middlewares:** proporcionan procesamiento adicional y manejo de errores.
 
 El flujo de registro sigue esta secuencia:
 
-**Router → Controller → Service → Repository → DAO → Modelo User → MongoDB**
+**Router → Passport (`register`) → Service → Repository → DAO → Modelo User → MongoDB → Controller (respuesta HTTP)**
 
 El servicio utiliza el helper de bcrypt para generar el hash de la contraseña antes de guardar al usuario. Para el login, el DAO obtiene expresamente el hash del usuario con `.select("+password")` y el servicio utiliza `comparePassword()` para verificar las credenciales.
 
-La lógica JWT está centralizada en `src/utils/jwt.js`; el middleware de `src/middlewares/auth.middleware.js` comprueba el token de la cookie y carga los datos públicos en `req.user`. Los controladores gestionan las respuestas HTTP y las cookies.
+La generación y verificación de JWT están disponibles en `src/utils/jwt.js`. En la Pre-entrega 4, la estrategia Passport `current` comprueba el JWT enviado en la cookie y coloca los datos públicos en `req.user`. El archivo `src/middlewares/auth.middleware.js` permanece como implementación anterior, pero **la ruta `/api/sessions/current` ya no lo utiliza**. El controller de login genera el JWT y administra la cookie.
 
 ## Modelo User
 
@@ -375,7 +381,7 @@ El ejemplo de request/response del registro se encuentra en **Endpoint de regist
 }
 ```
 
-El servicio valida que ambos campos estén presentes, normaliza el email, busca al usuario y compara la contraseña con el hash almacenado usando bcrypt. La firma JWT se realiza con `JWT_SECRET` del entorno, incluye `id`, `email`, `role` y vence según `JWT_EXPIRES_IN`.
+Passport ejecuta la estrategia `login`, que delega la validación en el servicio: exige los campos, normaliza el email, busca al usuario y compara la contraseña con el hash mediante bcrypt. Tras autenticar, **el controller** firma el JWT con `JWT_SECRET`, incluye `id`, `email`, `role` y aplica `JWT_EXPIRES_IN`.
 
 **Response HTTP 200 OK:**
 
@@ -417,7 +423,7 @@ GET /api/sessions/current
 Cookie: currentUser=<JWT_VALIDO>
 ```
 
-La cookie se envía automáticamente si el cliente HTTP la conserva. El middleware `authMiddleware` verifica el JWT y adjunta los campos públicos a `req.user`.
+La cookie se envía automáticamente si el cliente HTTP la conserva. La estrategia Passport `current` extrae y verifica el JWT de la cookie, y adjunta los campos públicos a `req.user`.
 
 **Response HTTP 200 OK:**
 
@@ -540,8 +546,36 @@ Estos endpoints se mantienen desde la Pre-entrega 1. Para `GET /api/health`, `GE
 - Logout con eliminación de cookie.
 - Pruebas de acceso válido, sin cookie, con token inválido y expirado.
 
+## Pre-entrega 4 — Passport.js y flujo de autenticación
+
+Las estrategias se configuran exclusivamente en `src/config/passport.config.js` y se inicializan en `src/app.js` mediante `passport.initialize()`. Las rutas delegan la autenticación en `passport.authenticate(..., { session: false }, callback)`, usando un callback para conservar los códigos de estado y los mensajes HTTP de la Pre-entrega 3. No se utiliza `express-session` ni `passport.session()`.
+
+| Estrategia | Implementación | Responsabilidad |
+|---|---|---|
+| `register` | `passport-local` | Valida nombre, apellido, email y contraseña; normaliza el correo; controla unicidad; usa bcrypt; guarda el usuario con rol `user` y devuelve datos públicos. |
+| `login` | `passport-local` | Valida email y contraseña usando el servicio y compara con bcrypt; entrega datos públicos del usuario al controller. |
+| `current` | `passport-jwt` | Extrae JWT de `req.cookies.currentUser`, verifica firma y vencimiento, valida campos y proporciona `req.user`. |
+
+**Separación de responsabilidades:** Passport autentica; **el controller de login** genera el JWT y establece la cookie `currentUser` con `HttpOnly` y `SameSite=Lax` (`Secure` en producción). El controller de `/current` devuelve solo `id`, `email` y `role`. `/logout` elimina la cookie y no requiere Passport. Las rutas y el contrato JSON se mantienen sin cambios.
+
+**Preparado para proveedores externos:** la centralización en `passport.config.js` permite incorporar estrategias adicionales como Google o GitHub sin modificar `app.js`. Dichos proveedores **todavía no están implementados**.
+
+### Pruebas de la Pre-entrega 4 realizadas con Postman
+
+| Escenario | HTTP observado |
+|---|---|
+| Registro exitoso | 201 |
+| Registro con email duplicado | 409 |
+| Login válido | 200 |
+| `/current` con cookie válida | 200 |
+| Logout | 200 |
+| `/current` después de logout | 401 |
+| Login con contraseña incorrecta | 401 |
+| `/current` con cookie y token mal formado | 401 |
+
+El flujo probado fue **register → login → current (200) → logout → current (401)**. Se recomienda adjuntar capturas de Postman ocultando el JWT, las contraseñas y cualquier secreto.
+
 ## Próximas funcionalidades
-- Passport.
 - Autorización por roles.
 - CRUD completo de eventos.
 - Inscripciones y control de cupos.

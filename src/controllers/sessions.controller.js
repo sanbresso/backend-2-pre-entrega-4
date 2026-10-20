@@ -1,4 +1,4 @@
-import { registerUser as registerUserService, loginUser as loginUserService } from "../services/sessions.service.js";
+import { generateToken } from "../utils/jwt.js";
 
 export function getSessionsInfo(req, res) {
   return res.status(200).json({
@@ -7,40 +7,20 @@ export function getSessionsInfo(req, res) {
   });
 }
 
-export const registerUser = async (req, res) => {
-  try {
-    const newUser = await registerUserService(req.body);
-
-    return res.status(201).json({
-      status: "success",
-      payload: newUser
-    });
-
-  } catch (error) {
-    const statusCode = error.code === 11000
-      ? 409
-      : error.statusCode || 500;
-
-    const message = error.code === 11000
-      ? "El email ya está registrado"
-      : statusCode === 500
-        ? "Error interno del servidor"
-        : error.message;
-
-    if (statusCode === 500) {
-      console.error("Error al registrar usuario:", error);
-    }
-
-    return res.status(statusCode).json({
-      status: "error",
-      message
-    });
-  }
+export const registerUser = (req, res) => {
+  return res.status(201).json({
+    status: "success",
+    payload: req.user
+  });
 };
 
-export const loginUser = async (req, res) => {
+export const loginUser = (req, res) => {
   try {
-    const token = await loginUserService(req.body);
+    const token = generateToken({
+      id: req.user.id,
+      email: req.user.email,
+      role: req.user.role
+    });
 
     res.cookie("currentUser", token, {
       httpOnly: true,
@@ -53,19 +33,12 @@ export const loginUser = async (req, res) => {
       status: "success",
       message: "Login correcto"
     });
-
   } catch (error) {
-    const statusCode = error.statusCode || 500;
+    console.error("Error al iniciar sesión:", error);
 
-    if (statusCode === 500) {
-      console.error("Error al iniciar sesión:", error);
-    }
-
-    return res.status(statusCode).json({
+    return res.status(500).json({
       status: "error",
-      message: statusCode === 500
-        ? "Error interno del servidor"
-        : error.message
+      message: "Error interno del servidor"
     });
   }
 };

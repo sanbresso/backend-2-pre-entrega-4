@@ -130,11 +130,9 @@ export const loginUser = async (credentials = {}) => {
     );
   }
 
-  const token = generateToken({
+   return {
     id: user._id.toString(),
     email: user.email,
     role: user.role
-  });
-
-  return token;
+  };
 };
